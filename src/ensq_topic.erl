@@ -30,16 +30,16 @@
 -define(RETRY_TIMEOUT, 1000).
 
 -record(state, {
-    ref2srv = [],
-    topic,
-    discovery_servers = [],
+    ref2srv = [], % format: [{Ref, {Host, Port}}]
+    topic, % format: binary()
+    discovery_servers = [], % format: [{Host, Port}]
     discover_interval = 10000,
-    servers = [],
-    channels = [],
-    targets = [],
+    servers = [], % format: [{Pid, Channel, Handler, Ref}]
+    channels = [], % format: [{Channel, Handler}]
+    targets = [], % format: nsqd hosts when initialized, [Pid] on connected
     targets_rev = [],
     retry_rule,
-    jitter = 0
+    jitter = 10
 }).
 
 %%%===================================================================
@@ -75,7 +75,7 @@ send(Topic, Msg) ->
     gen_server:call(Topic, {send, Msg}).
 
 retry(Srv, Channel, Handler, Retry, Rule) ->
-    Retry < 10 andalso retry(self(), Srv, Channel, Handler, Retry, Rule).
+    retry(self(), Srv, Channel, Handler, Retry, Rule).
 
 retry(Pid, Srv, Channel, Handler, Retry, {Max, Val, Type}) ->
     %% Wait retry seconds, at a maximum of 10 seconds
@@ -97,130 +97,61 @@ tick() ->
 
 tick(Pid) ->
     gen_server:cast(Pid, tick).
+
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server
 %%
 %% @end
 %%--------------------------------------------------------------------
+
 start_link(Topic, Spec) when is_binary(Topic) ->
     gen_server:start_link(?MODULE, [Topic, Spec], []);
 
 start_link(Topic, Spec) ->
-    gen_server:start_link({local, Topic}, ?MODULE, [Topic, Spec], []).
+    gen_server:start_link({local, Topic}, ?MODULE, [atom_to_binary(Topic, utf8), Spec], []).
 
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Initializes the server
-%%
-%% @spec init(Args) -> {ok, State} |
-%%                     {ok, State, Timeout} |
-%%                     ignore |
-%%                     {stop, Reason}
-%% @end
-%%--------------------------------------------------------------------
-init([Topic, {discovery, LookupDs, Channels, Targets}]) when is_binary(Topic) ->
-    tick(),
-    State0 = build_opts([]),
-    State = State0#state{topic = binary_to_list(Topic), discovery_servers = LookupDs,
-                         channels = Channels, targets = Targets},
-    {ok, connect_targets(State)};
-
 init([Topic, {discovery, LookupDs, Channels, Targets}]) ->
     tick(),
     State0 = build_opts([]),
-    State = State0#state{topic = atom_to_list(Topic), discovery_servers = LookupDs,
-                         channels = Channels, targets = Targets},
+    State = State0#state{topic = Topic, discovery_servers = LookupDs, channels = Channels, targets = Targets},
     {ok, connect_targets(State)}.
 
-connect_targets(State = #state{targets = Targets, topic = Topic}) ->
-    State#state{targets = [connect_target(Target, Topic) || Target <- Targets]}.
-
-
-
-connect_target({Host, Port}, Topic) ->
-    {ok, Pid} = ensq_connection:open(Host, Port, Topic),
-    Pid;
-connect_target(Targets, Topic) ->
-    Pids = [ensq_connection:open(Host, Port, Topic) ||
-               {Host, Port} <- Targets],
-    [Pid || {ok,Pid} <- Pids].
-
-
-build_opts(Opts) ->
-    {ok, Interval} = application:get_env(discover_interval),
-    {ok, Jitter} = application:get_env(discover_jitter),
-    {ok, MaxDelay} = application:get_env(max_retry_delay),
-    {ok, RetInitial} = application:get_env(retry_inital),
-    {ok, RetType} = application:get_env(retry_inc_type),
-    RetryRule = {MaxDelay, RetInitial, RetType},
-    State = #state{discover_interval = Interval, jitter = Jitter,
-                   retry_rule = RetryRule},
-    build_opts(Opts, State).
-
-%% build_opts([_ | R], State) ->
-%%     build_opts(R, State);
-
-build_opts([], State) ->
-    State.
-
-
-
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Handling call messages
-%%
-%% @spec handle_call(Request, From, State) ->
-%%                                   {reply, Reply, State} |
-%%                                   {reply, Reply, State, Timeout} |
-%%                                   {noreply, State} |
-%%                                   {noreply, State, Timeout} |
-%%                                   {stop, Reason, Reply, State} |
-%%                                   {stop, Reason, State}
-%% @end
-%%--------------------------------------------------------------------
 handle_call(stop, _From, State) ->
     {stop, normal, State};
 
 handle_call({send, _}, _From, State = #state{targets = [], targets_rev = []}) ->
     {reply, {error, not_connected}, State};
 
-handle_call({send, Msg}, From, State=#state{targets = [], targets_rev = Rev}) ->
-    handle_call({send, Msg}, From, State#state{targets=Rev, targets_rev=[]});
+handle_call({send, Msg}, From, State = #state{targets = [], targets_rev = Rev}) ->
+    handle_call({send, Msg}, From, State#state{targets = Rev, targets_rev = []});
 
-handle_call({send, Msg}, From, State =
-                #state{targets=[Pid | Tr], targets_rev=Rev}
-           ) when is_pid(Pid) ->
+handle_call({send, Msg}, From, State = #state{targets = [Pid | Tr], targets_rev = Rev}) when is_pid(Pid) ->
     ensq_connection:send(Pid, From, Msg),
     {noreply, State#state{targets = Tr, targets_rev = [Pid | Rev]}};
-handle_call({send, Msg}, From, State =
-                #state{targets=[Ts | Tr], targets_rev=Rev}
-           ) when is_list(Ts)->
+
+handle_call({send, Msg}, From, State = #state{targets = [Ts | Tr], targets_rev = Rev}) when is_list(Ts)->
     [ensq_connection:send(Pid, From, Msg) || {_, Pid} <- Ts],
     {noreply, State#state{targets = Tr, targets_rev = [Ts | Rev]}};
 
-handle_call(get_info, _From, State =
-                #state{
-                   channels = Channels,
-                   topic = Topic,
-                   servers = Servers
-                  }) ->
+handle_call(get_info, _From, State = #state{ channels = Channels, topic = Topic, servers = Servers}) ->
     Reply = {self(), Topic, Channels, Servers},
     {reply, Reply, State};
 
 handle_call(Req, _From, State) ->
-    lager:warning("Unknown message: ~p~n", [Req]),
+    logger:warning("Unknown message: ~p~n", [Req]),
     Reply = ok,
     {reply, Reply, State}.
 
+handle_cast({retry, {Host, Port}, _Channel, _Handler, Retry}, State) when Retry >= 10 ->
+    logger:warning("Retry ~p of connection ~s:~p given up.~n", [Retry, Host, Port]),
+    {noreply, State};
 handle_cast({retry, {Host, Port}, Channel, Handler, Retry}, State = #state{servers = Ss, retry_rule = Rule}) ->
-    Topic = iolist_to_binary(State#state.topic),
+    Topic = State#state.topic,
     case ensq_channel:open(Host, Port, Topic, Channel, Handler) of
         {ok, Pid} ->
             Ref = erlang:monitor(process, Pid),
@@ -228,12 +159,12 @@ handle_cast({retry, {Host, Port}, Channel, Handler, Retry}, State = #state{serve
             Ss1 = orddict:append({Host, Port}, Entry, Ss),
             {noreply, State#state{servers = Ss1, ref2srv = build_ref2srv(Ss1)}};
         E ->
-            lager:warning("Retry ~p of connection ~s:~p failed with ~p.~n", [Retry, Host, Port, E]),
+            logger:warning("Retry ~p of connection ~s:~p failed with ~p.~n", [Retry, Host, Port, E]),
             retry({Host, Port}, Channel, Handler, Retry+1, Rule),
             {noreply, State}
     end;
 handle_cast({add_channel, Channel, Handler}, State = #state{channels = Cs, servers = Ss}) ->
-    Topic = list_to_binary(State#state.topic),
+    Topic = State#state.topic,
     Ss1 = orddict:map(
         fun({Host, Port}, Pids) ->
             case ensq_channel:open(Host, Port, Topic, Channel, Handler) of
@@ -241,7 +172,7 @@ handle_cast({add_channel, Channel, Handler}, State = #state{channels = Cs, serve
                     Ref = erlang:monitor(process, Pid),
                     [{Pid, Channel, Topic, Handler, Ref}| Pids];
                 E ->
-                    lager:warning("Failed opening channel: ~p~n", [E]),
+                    logger:warning("Failed opening channel: ~p~n", [E]),
                     Pids
             end
         end, Ss),
@@ -268,17 +199,6 @@ handle_cast(tick, State = #state{discovery_servers = Hosts, topic = Topic, disco
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Handling all non call/cast messages
-%%
-%% @spec handle_info(Info, State) -> {noreply, State} |
-%%                                   {noreply, State, Timeout} |
-%%                                   {stop, Reason, State}
-%% @end
-%%--------------------------------------------------------------------
-
 handle_info({'DOWN', Ref, _, _, _}, State = #state{servers=Ss, ref2srv=R2S, retry_rule = Rule}) ->
     State1 = State#state{ref2srv = lists:keydelete(Ref, 1, R2S)},
     {Ref, Srv} = lists:keyfind(Ref, 1, R2S),
@@ -293,17 +213,6 @@ handle_info({'DOWN', Ref, _, _, _}, State = #state{servers=Ss, ref2srv=R2S, retr
 handle_info(_, State) ->
     {noreply, State}.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% This function is called by a gen_server when it is about to
-%% terminate. It should be the opposite of Module:init/1 and do any
-%% necessary cleaning up. When it returns, the gen_server terminates
-%% with Reason. The return value is ignored.
-%%
-%% @spec terminate(Reason, State) -> void()
-%% @end
-%%--------------------------------------------------------------------
 terminate(_Reason, _ = #state{ targets = Ts, servers = Ss }) ->
     [ensq_connection:close(T) || T <- Ts],
     Ss1 = [Pids || {_, Pids} <- Ss],
@@ -311,15 +220,6 @@ terminate(_Reason, _ = #state{ targets = Ts, servers = Ss }) ->
     [ensq_channel:close(Pid) ||{Pid, _, _, _} <- Ss2],
     ok.
 
-
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Convert process state when code is changed
-%%
-%% @spec code_change(OldVsn, State, Extra) -> {ok, NewState}
-%% @end
-%%--------------------------------------------------------------------
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
@@ -327,8 +227,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-add_discovered(JSON, State) ->
-    {ok, Producers} = jsxd:get([<<"producers">>], JSON),
+add_discovered(#{<<"producers">> := Producers}, State) ->
     Producers1 = [get_host(P) || P <- Producers],
     lists:foldl(fun add_host/2, State, Producers1).
 
@@ -337,7 +236,7 @@ add_host({Host, Port}, #state{servers = Srvs, channels = Cs, ref2srv = R2S} = St
         true ->
             State;
         false ->
-            Topic = iolist_to_binary(State#state.topic),
+            Topic = State#state.topic,
             Pids = [{ensq_channel:open(Host, Port, Topic, Channel, Handler), Channel, Handler} || {Channel, Handler} <- Cs],
             Pids1 = [{Pid, Channel, Handler, erlang:monitor(process, Pid)} || {{ok, Pid}, Channel, Handler} <- Pids],
             Refs = [{Ref, {Host, Port}} || {_, _, _, Ref} <- Pids1],
@@ -353,21 +252,18 @@ build_ref2srv([{_Srv, []} | R], Acc) ->
 build_ref2srv([{Srv, [{_, _, _, Ref} | RR]} | R], Acc) ->
     build_ref2srv([{Srv, RR} | R], [{Ref, Srv} | Acc]).
 
-
-get_host(Producer) ->
-    {ok, Addr} = jsxd:get(<<"broadcast_address">>, Producer),
-    {ok, Port} = jsxd:get(<<"tcp_port">>, Producer),
+get_host(#{<<"broadcast_address">> := Addr, <<"tcp_port">> := Port}) ->
     {binary_to_list(Addr), Port}.
 
 http_get(URL) ->
     case httpc:request(get, {URL,[{"Accept", "application/vnd.nsq; version=1.0"}]}, [], [{body_format, binary}]) of
         {ok,{{_,200,_}, _, Body}} ->
-            {ok, jsx:decode(Body)};
+            {ok, jiffy:decode(Body, [return_maps])};
         _ ->
             error
     end.
 
-down_ref(_, Ref, [{_, _, _, Ref, _}], _) ->
+down_ref(_, Ref, [{_, _, _, Ref}], _) ->
     delete;
 down_ref(_, _, [], _) ->
     delete;
@@ -380,3 +276,31 @@ down_ref(Srv, Ref, Records, Rule) ->
         _ ->
             Recods1
     end.
+
+connect_targets(State = #state{targets = Targets, topic = Topic}) ->
+    State#state{targets = [connect_target(Target, Topic) || Target <- Targets]}.
+
+connect_target({Host, Port}, Topic) ->
+    {ok, Pid} = ensq_connection:open(Host, Port, Topic),
+    Pid;
+connect_target(Targets, Topic) ->
+    Pids = [ensq_connection:open(Host, Port, Topic) || {Host, Port} <- Targets],
+    [Pid || {ok, Pid} <- Pids].
+
+build_opts(Opts) ->
+    {ok, Interval} = application:get_env(discover_interval),
+    {ok, Jitter} = application:get_env(discover_jitter),
+    {ok, MaxDelay} = application:get_env(max_retry_delay),
+    {ok, RetInitial} = application:get_env(retry_inital),
+    {ok, RetType} = application:get_env(retry_inc_type),
+    RetryRule = {MaxDelay, RetInitial, RetType},
+    State = #state{discover_interval = Interval, jitter = Jitter,
+                   retry_rule = RetryRule},
+    build_opts(Opts, State).
+
+%% build_opts([_ | R], State) ->
+%%     build_opts(R, State);
+
+build_opts([], State) ->
+    State.
+

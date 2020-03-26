@@ -1,21 +1,10 @@
 -module(ensq).
--export([start/0,
-         init/1,
-         producer/2, producer/3,
-         list/0,
-         send/2,
-         touch/1]).
 
+-export([init/1, producer/2, producer/3, list/0, send/2, touch/1]).
 
--export_type([
-              host/0,
-              channel/0,
-              topic_name/0,
-              channel_name/0
-             ]).
+-export_type([host/0, channel/0, topic_name/0, channel_name/0]).
 
--type host() :: {Host :: inet:ip_address() | inet:hostname(),
-                 Port :: inet:port_number()}.
+-type host() :: {Host :: inet:ip_address() | inet:hostname(), Port :: inet:port_number()}.
 
 -type single_target() :: host().
 
@@ -36,15 +25,6 @@
 
 -type spec() :: {[discovery_server()], [topic()]}.
 
-
-start() ->
-    application:start(inets),
-    application:start(syntax_tools),
-    application:start(compiler),
-    application:start(goldrush),
-    application:start(lager),
-    application:start(ensq).
-
 %%--------------------------------------------------------------------
 %% @doc
 %% This function is used to initialize one or more topics on a given
@@ -58,9 +38,8 @@ start() ->
 -spec init(spec()) -> ok.
 
 init({DiscoveryServers, Topics}) ->
-    [topic_from_sepc(DiscoveryServers, Topic) || Topic <- Topics],
+    [topic_from_spec(DiscoveryServers, Topic) || Topic <- Topics],
     ok.
-
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -107,11 +86,11 @@ producer(Channel, Host, Port) ->
 producer(Channel, Targets) ->
     ensq_topic:discover(Channel, [], [], Targets).
 
-topic_from_sepc(DiscoveryServers, {Topic, Channels}) ->
+topic_from_spec(DiscoveryServers, {Topic, Channels}) ->
     ensq_topic:discover(Topic, DiscoveryServers, Channels);
-topic_from_sepc(DiscoveryServers, {Topic, Channels, []}) ->
+topic_from_spec(DiscoveryServers, {Topic, Channels, []}) ->
     ensq_topic:discover(Topic, DiscoveryServers, Channels);
-topic_from_sepc(DiscoveryServers, {Topic, Channels, Targets}) ->
+topic_from_spec(DiscoveryServers, {Topic, Channels, Targets}) ->
     ensq_topic:discover(Topic, DiscoveryServers, Channels, Targets).
 
 touch({S, MsgID}) ->

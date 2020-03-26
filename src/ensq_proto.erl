@@ -8,12 +8,12 @@
 
 -define(IDENTITY_FIELD(F, J), [{F, I#identity.F} | J]).
 
--define(IDENTITY_FIELD_OPT(F, J), case I#identity.F of
-                                      undefined ->
-                                          J;
-                                      _ ->
-                                          [{F, I#identity.F} | J]
-                                  end).
+-define(IDENTITY_FIELD_OPT(F, J),
+    case I#identity.F of
+        undefined -> J;
+        _ -> [{F, I#identity.F} | J]
+    end).
+
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
@@ -46,7 +46,7 @@ encode(nop) ->
 encode(close) ->
     <<"CLS\n">>;
 encode({identify, #identity{} = I}) ->
-    JSON =  identity_to_json(I),
+    JSON = identity_to_json(I),
     <<"IDENTIFY\n", (byte_size(JSON)):32, JSON/binary>>;
 encode({subscribe, Topic, Channel})
   when is_binary(Channel), is_binary(Topic) ->
@@ -64,7 +64,7 @@ encode({publish, Topic, [_E | _] = Messages})
     <<"MPUB ", Topic/binary, $\n, (byte_size(Body)):32, Body/binary>>;
 encode({ready, N})
   when is_integer(N), N >= 0 ->
-    <<"RDY ", (i2b(N))/binary, $\n>>;
+    <<"RDY ", (integer_to_binary(N))/binary, $\n>>;
 encode({finish, MsgID})
   when is_binary(MsgID) ->
     <<"FIN ", MsgID/binary, $\n>>;
@@ -72,13 +72,11 @@ encode({requeue, MsgID, Timeout})
   when is_binary(MsgID),
        is_integer(Timeout),
        Timeout >= 0 ->
-    <<"REQ ", MsgID/binary, $\s, (i2b(Timeout))/binary, $\n>>;
+    <<"REQ ", MsgID/binary, $\s, (integer_to_binary(Timeout))/binary, $\n>>;
 encode({touch, MsgID})
   when is_binary(MsgID) ->
     <<"TOUCH ", MsgID/binary, $\n>>.
 
-i2b(I) ->
-    integer_to_binary(I).
 identity_to_json(#identity{} = I) ->
     J = ?IDENTITY_FIELD_OPT(short_id, []),
     J0 = ?IDENTITY_FIELD_OPT(long_id, J),
@@ -91,7 +89,7 @@ identity_to_json(#identity{} = I) ->
     J7 = ?IDENTITY_FIELD(deflate, J6),
     J8 = ?IDENTITY_FIELD(deflate_level, J7),
     J9 = ?IDENTITY_FIELD(sample_rate, J8),
-    jsx:encode(J9).
+    jiffy:encode({J9}).
 
 -ifdef(TEST).
 

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuite tests="10" failures="0" errors="0" skipped="0" time="0.108" name="file &quot;ensq.app&quot;">
+  <testcase time="0.006" name="ensq_proto:0 identify_test">
+    <system-out>
+    </system-out>
+  </testcase>
+  <testcase time="0.000" name="ensq_proto:0 subscribe_test">
+    <system-out>
+    </system-out>
+  </testcase>
+  <testcase time="0.000" name="ensq_proto:0 fin_test">
+    <system-out>
+    </system-out>
+  </testcase>
+  <testcase time="0.000" name="ensq_proto:0 req_test">
+    <system-out>
+    </system-out>
+  </testcase>
+  <testcase time="0.000" name="ensq_proto:0 touch_test">
+    <system-out>
+    </system-out>
+  </testcase>
+  <testcase time="0.000" name="ensq_proto:0 rdy_test">
+    <system-out>
+    </system-out>
+  </testcase>
+  <testcase time="0.000" name="ensq_proto:0 nop_test">
+    <system-out>
+    </system-out>
+  </testcase>
+  <testcase time="0.000" name="ensq_proto:0 cls_test">
+    <system-out>
+    </system-out>
+  </testcase>
+  <testcase time="0.000" name="ensq_proto:0 pub_test">
+    <system-out>
+    </system-out>
+  </testcase>
+  <testcase time="0.000" name="ensq_proto:0 mpub_test">
+    <system-out>
+    </system-out>
+  </testcase>
+</testsuite>
