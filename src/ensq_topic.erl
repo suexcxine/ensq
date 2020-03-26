@@ -30,17 +30,17 @@
 -define(RETRY_TIMEOUT, 1000).
 
 -record(state, {
-          ref2srv = [],
-          topic,
-          discovery_servers = [],
-          discover_interval = 60000,
-          servers = [],
-          channels = [],
-          targets = [],
-          targets_rev = [],
-          retry_rule,
-          jitter = 0
-         }).
+    ref2srv = [],
+    topic,
+    discovery_servers = [],
+    discover_interval = 10000,
+    servers = [],
+    channels = [],
+    targets = [],
+    targets_rev = [],
+    retry_rule,
+    jitter = 0
+}).
 
 %%%===================================================================
 %%% API
@@ -71,24 +71,23 @@ discover(Topic, Hosts, Channels, Targets) when is_list(Hosts)->
 discover(Topic, Host, Channels, Targets) ->
     discover(Topic, [Host], Channels, Targets).
 
-
 send(Topic, Msg) ->
     gen_server:call(Topic, {send, Msg}).
 
 retry(Srv, Channel, Handler, Retry, Rule) ->
-    retry(self(), Srv, Channel, Handler, Retry, Rule).
+    Retry < 10 andalso retry(self(), Srv, Channel, Handler, Retry, Rule).
 
 retry(Pid, Srv, Channel, Handler, Retry, {Max, Val, Type}) ->
     %% Wait retry seconds, at a maximum of 10 seconds
     %% Todo: sanitize those numbers!
-    Delay = case Type of
-                linear ->
-                    erlang:min(Retry*Val, Max);
-                quadratic ->
-                    erlang:min(Retry*Retry*Val, Max)
-            end,
-    timer:apply_after(Delay, ensq_topic, do_retry,
-                      [Pid, Srv, Channel, Handler, Retry]).
+    Delay =
+    case Type of
+        linear ->
+            erlang:min(Retry*Val, Max);
+        quadratic ->
+            erlang:min(Retry*Retry*Val, Max)
+    end,
+    timer:apply_after(Delay, ensq_topic, do_retry, [Pid, Srv, Channel, Handler, Retry]).
 
 do_retry(Pid, Srv, Channel, Handler, Retry) ->
     gen_server:cast(Pid, {retry, Srv, Channel, Handler, Retry}).
@@ -125,17 +124,17 @@ start_link(Topic, Spec) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([Topic, {discovery, Ds, Channels, Targets}]) when is_binary(Topic) ->
+init([Topic, {discovery, LookupDs, Channels, Targets}]) when is_binary(Topic) ->
     tick(),
     State0 = build_opts([]),
-    State = State0#state{topic = binary_to_list(Topic), discovery_servers = Ds,
+    State = State0#state{topic = binary_to_list(Topic), discovery_servers = LookupDs,
                          channels = Channels, targets = Targets},
     {ok, connect_targets(State)};
 
-init([Topic, {discovery, Ds, Channels, Targets}]) ->
+init([Topic, {discovery, LookupDs, Channels, Targets}]) ->
     tick(),
     State0 = build_opts([]),
-    State = State0#state{topic = atom_to_list(Topic), discovery_servers = Ds,
+    State = State0#state{topic = atom_to_list(Topic), discovery_servers = LookupDs,
                          channels = Channels, targets = Targets},
     {ok, connect_targets(State)}.
 
@@ -220,19 +219,8 @@ handle_call(Req, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Handling cast messages
-%%
-%% @spec handle_cast(Msg, State) -> {noreply, State} |
-%%                                  {noreply, State, Timeout} |
-%%                                  {stop, Reason, State}
-%% @end
-%%--------------------------------------------------------------------
-handle_cast({retry, {Host, Port}, Channel, Handler, Retry},
-            State = #state{servers = Ss, retry_rule = Rule}) ->
-    Topic = list_to_binary(State#state.topic),
+handle_cast({retry, {Host, Port}, Channel, Handler, Retry}, State = #state{servers = Ss, retry_rule = Rule}) ->
+    Topic = iolist_to_binary(State#state.topic),
     case ensq_channel:open(Host, Port, Topic, Channel, Handler) of
         {ok, Pid} ->
             Ref = erlang:monitor(process, Pid),
@@ -240,48 +228,37 @@ handle_cast({retry, {Host, Port}, Channel, Handler, Retry},
             Ss1 = orddict:append({Host, Port}, Entry, Ss),
             {noreply, State#state{servers = Ss1, ref2srv = build_ref2srv(Ss1)}};
         E ->
-            lager:warning("Retry ~p of connection ~s:~p failed with ~p.~n",
-                          [Retry, Host, Port, E]),
+            lager:warning("Retry ~p of connection ~s:~p failed with ~p.~n", [Retry, Host, Port, E]),
             retry({Host, Port}, Channel, Handler, Retry+1, Rule),
             {noreply, State}
     end;
-handle_cast({add_channel, Channel, Handler},
-            State = #state{channels = Cs, servers = Ss}) ->
+handle_cast({add_channel, Channel, Handler}, State = #state{channels = Cs, servers = Ss}) ->
     Topic = list_to_binary(State#state.topic),
     Ss1 = orddict:map(
-            fun({Host, Port}, Pids) ->
-                    case ensq_channel:open(Host, Port, Topic, Channel, Handler) of
-                        {ok, Pid} ->
-                            Ref = erlang:monitor(process, Pid),
-                            [{Pid, Channel, Topic, Handler, Ref}| Pids];
-                        E ->
-                            lager:warning("Failed opening channel: ~p~n", [E]),
-                            Pids
-                    end
-            end, Ss),
-    {noreply, State#state{servers = Ss1, channels = [{Channel, Handler} | Cs],
-                          ref2srv = build_ref2srv(Ss1)}};
+        fun({Host, Port}, Pids) ->
+            case ensq_channel:open(Host, Port, Topic, Channel, Handler) of
+                {ok, Pid} ->
+                    Ref = erlang:monitor(process, Pid),
+                    [{Pid, Channel, Topic, Handler, Ref}| Pids];
+                E ->
+                    lager:warning("Failed opening channel: ~p~n", [E]),
+                    Pids
+            end
+        end, Ss),
+    {noreply, State#state{servers = Ss1, channels = [{Channel, Handler} | Cs], ref2srv = build_ref2srv(Ss1)}};
 
 handle_cast(tick, State = #state{discovery_servers = []}) ->
     {noreply, State};
 
-handle_cast(tick, State = #state{
-                             discovery_servers = Hosts,
-                             topic = Topic,
-                             discover_interval = I
-                            }) ->
-    URLTail = "/lookup?topic=" ++ Topic,
-    State1 =
-        lists:foldl(fun ({H, Port}, Acc) ->
-                            Host = H ++ ":" ++ integer_to_list(Port),
-                            URL ="http://" ++ Host ++ URLTail,
-                            case http_get(URL) of
-                                {ok, JSON} ->
-                                    add_discovered(JSON, Acc);
-                                _ ->
-                                    Acc
-                            end
-                    end, State, Hosts),
+handle_cast(tick, State = #state{discovery_servers = Hosts, topic = Topic, discover_interval = I}) ->
+    State1 = lists:foldl(fun ({H, Port}, Acc) ->
+        RawURL = "http://~s:~w/lookup?topic=~s",
+        URL = lists:flatten(io_lib:format(RawURL, [H, Port, Topic])),
+        case http_get(URL) of
+            {ok, JSON} -> add_discovered(JSON, Acc);
+            _ -> Acc
+        end
+    end, State, Hosts),
     %% Add +/- 10% Jitter for the next discovery
     D = round(I/State#state.jitter),
     T = I + rand:uniform(D*2) - D,
@@ -302,8 +279,7 @@ handle_cast(_Msg, State) ->
 %% @end
 %%--------------------------------------------------------------------
 
-handle_info({'DOWN', Ref, _, _, _}, State =
-                #state{servers=Ss, ref2srv=R2S, retry_rule = Rule}) ->
+handle_info({'DOWN', Ref, _, _, _}, State = #state{servers=Ss, ref2srv=R2S, retry_rule = Rule}) ->
     State1 = State#state{ref2srv = lists:keydelete(Ref, 1, R2S)},
     {Ref, Srv} = lists:keyfind(Ref, 1, R2S),
     SrvData = orddict:fetch(Srv, Ss),
@@ -328,11 +304,7 @@ handle_info(_, State) ->
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
-terminate(_Reason,
-          _ = #state{
-                 targets = Ts,
-                 servers = Ss
-                }) ->
+terminate(_Reason, _ = #state{ targets = Ts, servers = Ss }) ->
     [ensq_connection:close(T) || T <- Ts],
     Ss1 = [Pids || {_, Pids} <- Ss],
     Ss2 = lists:flatten(Ss1),
@@ -356,23 +328,20 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 
 add_discovered(JSON, State) ->
-    {ok, Producers} = jsxd:get([<<"data">>, <<"producers">>], JSON),
+    {ok, Producers} = jsxd:get([<<"producers">>], JSON),
     Producers1 = [get_host(P) || P <- Producers],
     lists:foldl(fun add_host/2, State, Producers1).
 
-add_host({Host, Port}, State = #state{servers = Srvs, channels = Cs, ref2srv = R2S}) ->
+add_host({Host, Port}, #state{servers = Srvs, channels = Cs, ref2srv = R2S} = State) ->
     case orddict:is_key({Host, Port}, Srvs) of
         true ->
             State;
         false ->
-            Topic = list_to_binary(State#state.topic),
-            Pids = [{ensq_channel:open(Host, Port, Topic, Channel, Handler),
-                     Channel, Handler} || {Channel, Handler} <- Cs],
-            Pids1 = [{Pid, Channel, Handler, erlang:monitor(process, Pid)} ||
-                        {{ok, Pid}, Channel, Handler} <- Pids],
+            Topic = iolist_to_binary(State#state.topic),
+            Pids = [{ensq_channel:open(Host, Port, Topic, Channel, Handler), Channel, Handler} || {Channel, Handler} <- Cs],
+            Pids1 = [{Pid, Channel, Handler, erlang:monitor(process, Pid)} || {{ok, Pid}, Channel, Handler} <- Pids],
             Refs = [{Ref, {Host, Port}} || {_, _, _, Ref} <- Pids1],
-            State#state{servers = orddict:store({Host, Port}, Pids1, Srvs),
-                        ref2srv = Refs ++ R2S}
+            State#state{servers = orddict:store({Host, Port}, Pids1, Srvs), ref2srv = Refs ++ R2S}
     end.
 
 build_ref2srv(D) ->
@@ -391,7 +360,7 @@ get_host(Producer) ->
     {binary_to_list(Addr), Port}.
 
 http_get(URL) ->
-    case httpc:request(get, {URL,[]}, [], [{body_format, binary}]) of
+    case httpc:request(get, {URL,[{"Accept", "application/vnd.nsq; version=1.0"}]}, [], [{body_format, binary}]) of
         {ok,{{_,200,_}, _, Body}} ->
             {ok, jsx:decode(Body)};
         _ ->

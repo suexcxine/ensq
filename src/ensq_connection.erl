@@ -74,7 +74,7 @@ connect(State = #state{host = Host, port = Port}) ->
         undefined ->
             ok;
         Old ->
-            lager:info("[~s:~p] Closing as part of connect.", [Host, Port]),
+            lager:info("[~p:~p] Closing as part of connect.", [Host, Port]),
             gen_tcp:close(Old)
     end,
     Opts = [{active, true}, binary, {deliver, term}, {packet, raw}],
@@ -83,16 +83,16 @@ connect(State = #state{host = Host, port = Port}) ->
         {ok, Socket} ->
             case gen_tcp:send(Socket, ensq_proto:encode(version)) of
                 ok ->
-                    lager:info("[~s:~p] Connected to: ~p.",
+                    lager:info("[~p:~p] Connected to: ~p.",
                                [Host, Port, Socket]),
                     State1#state{socket = Socket};
                 E ->
-                    lager:info("[~s:~p] Connection errror: ~p.",
+                    lager:info("[~p:~p] Connection errror: ~p.",
                                [Host, Port, E]),
                     State1
             end;
         E ->
-            lager:error("[~s:~p] target Error: ~p~n", [Host, Port, E]),
+            lager:error("[~p:~p] target Error: ~p~n", [Host, Port, E]),
             State1
     end.
 %%--------------------------------------------------------------------
