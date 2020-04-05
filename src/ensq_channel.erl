@@ -34,7 +34,7 @@
 
 open(Host, Port, Topic, Channel, Handler) ->
     Ref = make_ref(),
-    Pid = spawn(ensq_channel, init, [self(), Ref, Host, Port, Topic, Channel, Handler]),
+    Pid = spawn_link(ensq_channel, init, [self(), Ref, Host, Port, Topic, Channel, Handler]),
     receive
         {Ref, ok} -> {ok, Pid};
         {Ref, E} -> E
