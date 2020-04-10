@@ -136,10 +136,12 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 
 data(#state{buffer = <<Size:32/integer, Raw:Size/binary, Rest/binary>>} = State) ->
+    State3 =
     case handle_frame(Raw, State) of
         {state, State2} -> State2#state{buffer = Rest};
         _ -> State#state{buffer = Rest}
-    end;
+    end,
+    data(State3);
 data(State) ->
     State.
 
