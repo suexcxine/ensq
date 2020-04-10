@@ -120,7 +120,8 @@ handle_info({tcp_error, S, Reason}, State = #state{socket = S}) ->
     logger:info("[~p:~p] Tcp error, reason: ~p.", [State#state.host, State#state.port, Reason]),
     {noreply, connect(State)};
 
-handle_info(_Info, State) ->
+handle_info(Info, State) ->
+    logger:info("[~p:~p] Unknown handle_info msg: ~p", [State#state.host, State#state.port, Info]),
     {noreply, State}.
 
 terminate(_Reason, _State = #state{socket = S}) ->
